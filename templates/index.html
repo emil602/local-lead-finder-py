@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Lead Finder (Python MVP)</title>
+  <style>
+    /* -------- Theme tokens -------- */
+    :root {
+      --bg: #ffffff;
+      --fg: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --head: #f9fafb;
+      --btn-bg: #111827;
+      --btn-fg: #ffffff;
+      --btn-muted-bg: #f3f4f6;
+      --btn-muted-fg: #111827;
+      --accent: #3b82f6;
+    }
+    [data-theme="dark"] {
+      --bg: #0b1018;
+      --fg: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #1f2937;
+      --head: #101827;
+      --btn-bg: #2563eb;
+      --btn-fg: #ffffff;
+      --btn-muted-bg: #1f2937;
+      --btn-muted-fg: #e5e7eb;
+      --accent: #60a5fa;
+    }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="system"] { color-scheme: dark; }
+    }
+
+    /* -------- Base layout -------- */
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Arial, sans-serif;
+      margin: 24px;
+    }
+    h1 { margin: 0 0 16px; }
+    input, button {
+      padding: 10px;
+      font-size: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--fg);
+    }
+    input:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .muted { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .bar { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 12px; }
+    .btn { background: var(--btn-bg); color: var(--btn-fg); border: none; cursor: pointer; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-muted { background: var(--btn-muted-bg); color: var(--btn-muted-fg); border: 1px solid var(--border); }
+
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid var(--border); padding: 8px; text-align: left; font-size: 14px; }
+    thead { background: var(--head); }
+
+    .right { display: flex; align-items: center; gap: 8px; }
+
+    /* -------- Spinner -------- */
+    .spinner {
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .hidden { display: none; }
+
+    /* Theme toggle group */
+    .segmented {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .segmented button {
+      padding: 6px 10px;
+      background: var(--btn-muted-bg);
+      color: var(--btn-muted-fg);
+      border: none;
+    }
+    .segmented button.active {
+      background: var(--btn-bg);
+      color: var(--btn-fg);
+    }
+  </style>
+</head>
+<body>
+  <h1>Local Lead Finder (Python MVP)</h1>
+
+  <form id="searchForm">
+    <div class="row">
+      <input id="category" placeholder='Category (e.g., "restaurants")' required />
+      <input id="location" placeholder='Location (e.g., "Austin, TX")' required />
+      <button id="searchBtn" type="submit" class="btn">Search</button>
+    </div>
+  </form>
+
+  <div class="bar">
+    <div class="right">
+      <div id="spinner" class="spinner hidden" aria-hidden="true"></div>
+      <div id="status" class="muted">No results yet</div>
+    </div>
+    <div class="right">
+      <div class="segmented" id="themeGroup" aria-label="Theme">
+        <button type="button" data-theme="light">Light</button>
+        <button type="button" data-theme="dark">Dark</button>
+        <button type="button" data-theme="system">System</button>
+      </div>
+      <button id="loadMoreBtn" class="btn-muted" disabled>Load More</button>
+      <button id="downloadBtn" class="btn-muted" disabled>Download CSV</button>
+    </div>
+  </div>
+
+  <div style="overflow:auto;">
+    <table id="resultsTable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Address</th>
+          <th>Rating</th>
+          <th>Reviews</th>
+          <th>Phone</th>
+          <th>Website</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <p class="muted">
+    Data from Google Places. Subject to Google Maps Platform Terms; show appropriate attributions.
+  </p>
+
+  <script>
+    /* ------- DOM refs ------- */
+    var form = document.getElementById("searchForm");
+    var categoryEl = document.getElementById("category");
+    var locationEl = document.getElementById("location");
+    var statusEl = document.getElementById("status");
+    var tableBody = document.querySelector("#resultsTable tbody");
+    var downloadBtn = document.getElementById("downloadBtn");
+    var loadMoreBtn = document.getElementById("loadMoreBtn");
+    var searchBtn = document.getElementById("searchBtn");
+    var spinner = document.getElementById("spinner");
+    var themeGroup = document.getElementById("themeGroup");
+
+    /* ------- State ------- */
+    var currentLeads = [];
+    var currentCategory = "";
+    var currentLocation = "";
+    var nextPageToken = ""; // empty = no more
+
+    function val(x, d) { return (x === null || x === undefined) ? d : x; }
+    function showSpinner(on) {
+      if (on) { spinner.classList.remove("hidden"); spinner.setAttribute("aria-hidden","false"); }
+      else { spinner.classList.add("hidden"); spinner.setAttribute("aria-hidden","true"); }
+    }
+
+    function appendRows(leads) {
+      for (var i = 0; i < leads.length; i++) {
+        var l = leads[i];
+        var name = val(l.name, "");
+        var address = val(l.address, "");
+        var rating = val(l.rating, "-");
+        var reviewCount = val(l.reviewCount, "-");
+        var phone = val(l.phone, "-");
+        var website = l.website ? '<a href="' + l.website + '" target="_blank" rel="noreferrer">Visit</a>' : "-";
+
+        var tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + name + "</td>" +
+          "<td>" + address + "</td>" +
+          "<td>" + rating + "</td>" +
+          "<td>" + reviewCount + "</td>" +
+          "<td>" + phone + "</td>" +
+          "<td>" + website + "</td>";
+        tableBody.appendChild(tr);
+      }
+    }
+
+    function updateUI() {
+      statusEl.textContent = currentLeads.length ? ("Found " + currentLeads.length + " leads") : "No results";
+      downloadBtn.disabled = currentLeads.length === 0;
+      loadMoreBtn.disabled = !nextPageToken;  // enable only if more pages
+    }
+
+    function fetchPage(opts) {
+      var body = { };
+      if (opts.initial) {
+        body.category = currentCategory;
+        body.location = currentLocation;
+      }
+      if (nextPageToken) {
+        body.pageToken = nextPageToken;
+      }
+
+      showSpinner(true);
+      return fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      })
+      .then(function (r) { return r.json().then(function (j){ return {ok:r.ok, body:j}; }); })
+      .then(function (res) {
+        if (!res.ok) { throw new Error(res.body && res.body.error ? res.body.error : "Search failed"); }
+        var newLeads = res.body.leads || [];
+        appendRows(newLeads);
+        currentLeads = currentLeads.concat(newLeads);
+        nextPageToken = res.body.nextPageToken || "";
+        updateUI();
+      })
+      .catch(function (err) {
+        statusEl.textContent = "Error: " + err.message;
+      })
+      .finally(function () {
+        showSpinner(false);
+      });
+    }
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      currentCategory = categoryEl.value.trim();
+      currentLocation = locationEl.value.trim();
+      currentLeads = [];
+      nextPageToken = "";
+      tableBody.innerHTML = "";
+      statusEl.textContent = "Searching…";
+      downloadBtn.disabled = true;
+      loadMoreBtn.disabled = true;
+      searchBtn.disabled = true;
+
+      fetchPage({ initial: true })
+        .finally(function () { searchBtn.disabled = false; });
+    });
+
+    loadMoreBtn.addEventListener("click", function () {
+      if (!nextPageToken) return;
+      statusEl.textContent = "Loading more…";
+      loadMoreBtn.disabled = true;
+      fetchPage({ initial: false });
+    });
+
+    downloadBtn.addEventListener("click", function () {
+      fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leads: currentLeads })
+      })
+      .then(function (r) { return r.blob(); })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "leads.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(function () { alert("Failed to download CSV"); });
+    });
+
+    /* ------- Theme toggle (Light / Dark / System) ------- */
+    function setTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      try { localStorage.setItem("llf-theme", theme); } catch(e) {}
+      // update UI state
+      var buttons = themeGroup.querySelectorAll("button");
+      for (var i=0;i<buttons.length;i++) {
+        var b = buttons[i];
+        if (b.getAttribute("data-theme") === theme) b.classList.add("active");
+        else b.classList.remove("active");
+      }
+    }
+    // init theme from storage or default to light
+    (function() {
+      var saved = null;
+      try { saved = localStorage.getItem("llf-theme"); } catch(e) {}
+      setTheme(saved || "light");
+    })();
+
+    themeGroup.addEventListener("click", function (e) {
+      var t = e.target && e.target.getAttribute ? e.target.getAttribute("data-theme") : null;
+      if (!t) return;
+      setTheme(t);
+    });
+  </script>
+</body>
+</html>
